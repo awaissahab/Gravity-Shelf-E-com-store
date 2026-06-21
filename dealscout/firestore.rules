@@ -1,0 +1,144 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isOwner(userId) {
+      return request.auth.uid == userId;
+    }
+    
+    function isAdmin() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    }
+    
+    function isMerchant() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'merchant';
+    }
+    
+    function isValidTimestamp() {
+      return request.resource.data.keys().hasAll(['createdAt']) &&
+             request.resource.data.createdAt is timestamp;
+    }
+    
+    // Users collection
+    match /users/{userId} {
+      allow read: if isAuthenticated();
+      allow create: if isOwner(userId);
+      allow update: if isOwner(userId) || isAdmin();
+      allow delete: if isAdmin();
+      
+      // Subcollections
+      match /{document=**} {
+        allow read, write: if isOwner(userId);
+      }
+    }
+    
+    // Deals collection
+    match /deals/{dealId} {
+      allow read: if true; // Anyone can view deals
+      
+      allow create: if isAuthenticated() && isMerchant() &&
+                    request.resource.data.merchantId == request.auth.uid &&
+                    request.resource.data.title is string &&
+                    request.resource.data.discountValue is number;
+      
+      allow update: if isAuthenticated() && 
+                    (isOwner(resource.data.merchantId) || isAdmin());
+      
+      allow delete: if isAdmin() || (isAuthenticated() && isOwner(resource.data.merchantId));
+    }
+    
+    // Merchants collection
+    match /merchants/{merchantId} {
+      allow read: if true;
+      
+      allow create: if isAuthenticated() && request.resource.data.userId == request.auth.uid;
+      
+      allow update: if isAuthenticated() && 
+                    (isOwner(resource.data.userId) || isAdmin());
+      
+      allow delete: if isAdmin();
+    }
+    
+    // Reviews collection
+    match /reviews/{reviewId} {
+      allow read: if true;
+      
+      allow create: if isAuthenticated() &&
+                    request.resource.data.userId == request.auth.uid &&
+                    request.resource.data.rating >= 0 &&
+                    request.resource.data.rating <= 5;
+      
+      allow update: if isAuthenticated() && isOwner(resource.data.userId);
+      
+      allow delete: if isAdmin() || isAuthenticated();
+    }
+    
+    // Favorites collection (user subcollection or separate)
+    match /favorites/{favoriteId} {
+      allow read, write: if isAuthenticated() && 
+                         request.resource.data.userId == request.auth.uid;
+    }
+    
+    // Transactions collection
+    match /transactions/{transactionId} {
+      allow read: if isAuthenticated() && 
+                  (resource.data.userId == request.auth.uid || isAdmin());
+      
+      allow create: if isAuthenticated() && 
+                    request.resource.data.userId == request.auth.uid;
+      
+      allow update: if isAdmin(); // Only admin can update transaction status
+      
+      allow delete: if isAdmin();
+    }
+    
+    // Payments collection
+    match /payments/{paymentId} {
+      allow read: if isAuthenticated() && 
+                  (resource.data.userId == request.auth.uid || isAdmin());
+      
+      allow create: if false; // Only Cloud Functions can create payment records
+      
+      allow update: if isAdmin();
+      
+      allow delete: if isAdmin();
+    }
+    
+    // Notifications collection
+    match /notifications/{notificationId} {
+      allow read: if isAuthenticated() && 
+                  (resource.data.userId == request.auth.uid || 
+                   resource.data.userId == null); // Public notifications
+      
+      allow create: if false; // Only Cloud Functions can create notifications
+      
+      allow update: if isAuthenticated() && isOwner(resource.data.userId);
+      
+      allow delete: if isAdmin() || (isAuthenticated() && isOwner(resource.data.userId));
+    }
+    
+    // Reports collection (for spam/fake deal reports)
+    match /reports/{reportId} {
+      allow read: if isAdmin();
+      
+      allow create: if isAuthenticated();
+      
+      allow update: if isAdmin();
+      
+      allow delete: if isAdmin();
+    }
+    
+    // Analytics collection (aggregated data)
+    match /analytics/{docId} {
+      allow read: if isAdmin() || isMerchant();
+      
+      allow write: if false; // Only Cloud Functions can write analytics
+    }
+  }
+}
